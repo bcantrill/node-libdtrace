@@ -1,0 +1,9 @@
+
+dtrace, a node.js addon for controlling DTrace enablings
+--------------------------------------------------------
+
+This is a simple (and, for the moment, crude) addon to provide native
+libdtrace to node.js programs.  Currently, only the most basic DTrace
+enablings are supported -- it doesn't support rather major functionality
+like aggregations and error handling.
+
