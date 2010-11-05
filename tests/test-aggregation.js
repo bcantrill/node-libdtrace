@@ -24,42 +24,52 @@ dtp.aggwalk(function (varid, key, val) {
 
 dtp = new libdtrace.Consumer();
 
+var lq = function (val)
+{
+	return (val + ', 3, 7, 3')
+};
+
+aggacts = {
+	max: { args: [ '10', '20' ], expected: 20 },
+	min: { args: [ '10', '20' ], expected: 10 },
+	count: { args: [ '', '' ], expected: 2 },
+	sum: { args: [ '10', '20' ], expected: 30 },
+	avg: { args: [ '30', '1' ], expected: 15.5 },
+	quantize: { args: [ '2', '4', '5', '8' ], expected: [
+	    [ [ 2, 3 ], 1 ],
+	    [ [ 4, 7 ], 2 ],
+	    [ [ 8, 15 ], 1 ]
+	] },
+	lquantize: { args: [ lq(2), lq(4), lq(5), lq(8) ], expected: [
+	    [ [ dtp.aggmin(), 2 ], 1 ],
+	    [ [ 3, 5 ], 2 ],
+	    [ [ 6, dtp.aggmax() ], 1 ]
+	] }
+};
+
+varids = [ '' ];
 prog = 'BEGIN\n{\n';
 
-for (i = -32; i < 32; i++)
-	prog += '\t@ = quantize(' + i + ');\n';
+for (act in aggacts) {
+	varids.push(act);
+
+	for (i = 0; i < aggacts[act].args.length; i++) {
+		prog += '\t@agg' + act + ' = ' + act + '(' +
+		     aggacts[act].args[i] + ');\n';
+	}
+}
 
 prog += '}\n';
-
-sys.puts(prog);
 
 dtp.strcompile(prog);
 
 dtp.go();
 
 dtp.aggwalk(function (varid, key, val) {
-	var expected = [
-		[ [ -63, -32 ], 1 ],
-		[ [ -31, -16 ], 16 ],
-		[ [ -15, -8 ], 8 ],
-		[ [ -7, -4 ], 4 ],
-		[ [ -3, -2 ], 2 ],
-		[ [ -1, -1 ], 1 ],
-		[ [ 0, 0 ], 1 ],
-		[ [ 1, 1 ], 1 ],
-		[ [ 2, 3 ], 2 ],
-		[ [ 4, 7 ], 4 ],
-		[ [ 8, 15 ], 8 ],
-		[ [ 16, 31 ], 16 ],
-	];
+	assert.ok(varids[varid], 'invalid variable ID ' + varid);
+	assert.ok(aggacts[varids[varid]], 'unknown variable ID ' + varid);
 
-	assert.equal(varid, 1);
-	assert.ok(key instanceof Array, 'expected key to be an array');
-	assert.equal(key.length, 0);
-	assert.ok(val instanceof Array, 'expected val to be an array');
-	assert.deepEqual(expected, val);
-	sys.puts(sys.inspect(val));
+	act = aggacts[varids[varid]];
+	assert.deepEqual(act.expected, val);
 });
-
-delete dtp;
 

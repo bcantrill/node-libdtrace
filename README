@@ -1,9 +1,0 @@
-
-dtrace, a node.js addon for controlling DTrace enablings
---------------------------------------------------------
-
-This is a simple (and, for the moment, crude) addon to provide native
-libdtrace to node.js programs, supporting basic enablings (including
-aggregations).  Currently, esoteric actions are not supported -- this is
-not designed to allow a drop-in replacement for dtrace(1). 
-

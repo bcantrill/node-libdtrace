@@ -261,8 +261,11 @@ DTraceConsumer::Setopt(const Arguments& args)
 	String::Utf8Value option(args[0]->ToString());
 
 	if (args.Length() >= 2) {
-		if (!args[1]->IsString())
-			return (dtc->badarg("expected value for option"));
+		if (args[1]->IsArray())
+			return (dtc->badarg("option value can't be an array"));
+
+		if (args[1]->IsObject())
+			return (dtc->badarg("option value can't be an object"));
 
 		String::Utf8Value optval(args[1]->ToString());
 		rval = dtrace_setopt(dtp, *option, *optval);
@@ -448,7 +451,8 @@ DTraceConsumer::ranges_quantize(dtrace_aggvarid_t varid)
 		if (i < DTRACE_QUANTIZE_ZEROBUCKET) {
 			/*
 			 * If we're less than the zero bucket, our range
-			 * extends from 
+			 * extends from negative infinity through to the
+			 * beginning of our zeroth bucket.
 			 */
 			min = i > 0 ? DTRACE_QUANTIZE_BUCKETVAL(i - 1) + 1 :
 			    INT64_MIN;
@@ -562,12 +566,20 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 	case DTRACEAGG_COUNT:
 	case DTRACEAGG_MIN:
 	case DTRACEAGG_MAX:
-	case DTRACEAGG_AVG:
 	case DTRACEAGG_SUM: {
 		caddr_t addr = agg->dtada_data + aggrec->dtrd_offset;
 
 		assert(aggrec->dtrd_size == sizeof (uint64_t));
 		val = Number::New(*((int64_t *)addr));
+		break;
+	}
+
+	case DTRACEAGG_AVG: {
+		const int64_t *data = (int64_t *)(agg->dtada_data +
+		    aggrec->dtrd_offset);
+
+		assert(aggrec->dtrd_size == sizeof (uint64_t) * 2);
+		val = Number::New(data[1] / (double)data[0]);
 		break;
 	}
 
