@@ -653,6 +653,7 @@ DTraceConsumer::Aggwalk(const Arguments& args)
 	HandleScope scope;
 	DTraceConsumer *dtc = ObjectWrap::Unwrap<DTraceConsumer>(args.Holder());
 	dtrace_hdl_t *dtp = dtc->dtc_handle;
+	int rval;
 
 	if (!args[0]->IsFunction())
 		return (dtc->badarg("expected function as argument"));
@@ -671,7 +672,16 @@ DTraceConsumer::Aggwalk(const Arguments& args)
 		    dtrace_errmsg(dtp, dtrace_errno(dtp))));
 	}
 
-	if (dtrace_aggregate_walk(dtp, DTraceConsumer::aggwalk, dtc) == -1) {
+	rval = dtrace_aggregate_walk(dtp, DTraceConsumer::aggwalk, dtc);
+
+	/*
+	 * Flush the ranges cache; the ranges will go out of scope when the
+	 * destructor for our HandleScope is called, and we cannot be left
+	 * holding references.
+	 */
+	dtc->ranges_cache(DTRACE_AGGVARIDNONE, NULL);
+
+	if (rval == -1) {
 		if (!dtc->dtc_error->IsNull())
 			return (dtc->dtc_error);
 
