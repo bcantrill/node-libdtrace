@@ -1,3 +1,12 @@
+/*
+ * For whatever reason, g++ on Solaris defines _XOPEN_SOURCE -- which in
+ * turn will prevent us from pulling in our desired definition for boolean_t.
+ * We don't need it, so explicitly undefine it.
+ */
+#ifdef _XOPEN_SOURCE
+#undef _XOPEN_SOURCE
+#endif
+
 #include <v8.h>
 #include <node.h>
 #include <string.h>
@@ -33,7 +42,9 @@ protected:
 
 	Handle<Value> error(const char *fmt, ...);
 	Handle<Value> badarg(const char *msg);
+	boolean_t valid(const dtrace_recdesc_t *);
 	const char *action(const dtrace_recdesc_t *, char *, int);
+	Local<Value> record(const dtrace_recdesc_t *, caddr_t);
 
 	Local<Array> *ranges_cached(dtrace_aggvarid_t);
 	Local<Array> *ranges_cache(dtrace_aggvarid_t, Local<Array> *);
@@ -156,6 +167,7 @@ DTraceConsumer::action(const dtrace_recdesc_t *rec, char *buf, int size)
 		{ DTRACEACT_LIBACT,	"<library action>" },
 		{ DTRACEACT_USTACK,	"ustack()" },
 		{ DTRACEACT_JSTACK,	"jstack()" },
+		{ DTRACEACT_USYM,	"usym()" },
 		{ DTRACEACT_UMOD,	"umod()" },
 		{ DTRACEACT_UADDR,	"uaddr()" },
 		{ DTRACEACT_STOP,	"stop()" },
@@ -217,6 +229,95 @@ Handle<Value>
 DTraceConsumer::badarg(const char *msg)
 {
 	return (ThrowException(Exception::TypeError(String::New(msg))));
+}
+
+boolean_t
+DTraceConsumer::valid(const dtrace_recdesc_t *rec)
+{
+	dtrace_actkind_t action = rec->dtrd_action;
+
+	switch (action) {
+	case DTRACEACT_DIFEXPR:
+	case DTRACEACT_SYM:
+	case DTRACEACT_MOD:
+	case DTRACEACT_USYM:
+	case DTRACEACT_UMOD:
+	case DTRACEACT_UADDR:
+		return (B_TRUE);
+
+	default:
+		return (B_FALSE);
+	}
+}
+
+Local<Value>
+DTraceConsumer::record(const dtrace_recdesc_t *rec, caddr_t addr)
+{
+	switch (rec->dtrd_action) {
+	case DTRACEACT_DIFEXPR:
+		switch (rec->dtrd_size) {
+		case sizeof (uint64_t):
+			return (Number::New(*((int64_t *)addr)));
+
+		case sizeof (uint32_t):
+			return (Integer::New(*((int32_t *)addr)));
+
+		case sizeof (uint16_t):
+			return (Integer::New(*((uint16_t *)addr)));
+
+		case sizeof (uint8_t):
+			return (Integer::New(*((uint8_t *)addr)));
+
+		default:
+			return (String::New((const char *)addr));
+		}
+
+	case DTRACEACT_SYM:
+	case DTRACEACT_MOD:
+	case DTRACEACT_USYM:
+	case DTRACEACT_UMOD:
+	case DTRACEACT_UADDR:
+		dtrace_hdl_t *dtp = dtc_handle;
+		char buf[2048], *tick, *plus;
+
+		buf[0] = '\0';
+
+		if (DTRACEACT_CLASS(rec->dtrd_action) == DTRACEACT_KERNEL) {
+			uint64_t pc = ((uint64_t *)addr)[0];
+			dtrace_addr2str(dtp, pc, buf, sizeof (buf) - 1);
+		} else {
+			uint64_t pid = ((uint64_t *)addr)[0];
+			uint64_t pc = ((uint64_t *)addr)[1];
+			dtrace_uaddr2str(dtp, pid, pc, buf, sizeof (buf) - 1);
+		}
+
+		if (rec->dtrd_action == DTRACEACT_MOD ||
+		    rec->dtrd_action == DTRACEACT_UMOD) {
+			/*
+			 * If we're looking for the module name, we'll
+			 * return everything to the left of the left-most
+			 * tick -- or "<undefined>" if there is none.
+			 */
+			if ((tick = strchr(buf, '`')) == NULL)
+				return (String::New("<unknown>"));
+
+			*tick = '\0';
+		} else if (rec->dtrd_action == DTRACEACT_SYM ||
+		    rec->dtrd_action == DTRACEACT_USYM) {
+			/*
+			 * If we're looking for the symbol name, we'll
+			 * return everything to the left of the right-most
+			 * plus sign (if there is one).
+			 */
+			if ((plus = strrchr(buf, '+')) != NULL)
+				*plus = '\0';
+		}
+
+		return (String::New(buf));
+	}
+
+	assert(B_FALSE);
+	return (Integer::New(-1));
 }
 
 Handle<Value>
@@ -339,7 +440,7 @@ DTraceConsumer::consume(const dtrace_probedata_t *data,
 		return (DTRACE_CONSUME_NEXT);
 	}
 
-	if (rec->dtrd_action != DTRACEACT_DIFEXPR) {
+	if (!dtc->valid(rec)) {
 		char errbuf[256];
 	
 		dtc->dtc_error = dtc->error("unsupported action %s "
@@ -351,30 +452,8 @@ DTraceConsumer::consume(const dtrace_probedata_t *data,
 	}
 
 	Local<Object> record = Object::New();
-	void *addr = data->dtpda_data;
-	
-	switch (rec->dtrd_size) {
-	case sizeof (uint64_t):
-		datum = Number::New(*((int64_t *)addr));
-		break;
 
-	case sizeof (uint32_t):
-		datum = Integer::New(*((int32_t *)addr));
-		break;
-
-	case sizeof (uint16_t):
-		datum = Integer::New(*((uint16_t *)addr));
-		break;
-
-	case sizeof (uint8_t):
-		datum = Integer::New(*((uint8_t *)addr));
-		break;
-
-	default:
-		datum = String::New((const char *)addr);
-	}
-
-	record->Set(String::New("data"), datum);
+	record->Set(String::New("data"), dtc->record(rec, data->dtpda_data));
 
 	Local<Value> argv[2] = { probe, record };
 
@@ -528,7 +607,7 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 		caddr_t addr = agg->dtada_data + rec->dtrd_offset;
 		Local<Value> datum;
 
-		if (rec->dtrd_action != DTRACEACT_DIFEXPR) {
+		if (!dtc->valid(rec)) {
 			dtc->dtc_error = dtc->error("unsupported action %s "
 			    "as key #%d in aggregation \"%s\"\n",
 			    dtc->action(rec, errbuf, sizeof (errbuf)), i,
@@ -536,28 +615,7 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 			return (DTRACE_AGGWALK_ERROR);
 		}
 
-		switch (rec->dtrd_size) {
-		case sizeof (uint64_t):
-			datum = Number::New(*((int64_t *)addr));
-			break;
-
-		case sizeof (uint32_t):
-			datum = Integer::New(*((int32_t *)addr));
-			break;
-
-		case sizeof (uint16_t):
-			datum = Integer::New(*((uint16_t *)addr));
-			break;
-
-		case sizeof (uint8_t):
-			datum = Integer::New(*((uint8_t *)addr));
-			break;
-
-		default:
-			datum = String::New((const char *)addr);
-		}
-
-		key->Set(i - 1, datum);
+		key->Set(i - 1, dtc->record(rec, addr));
 	}
 
 	aggrec = &aggdesc->dtagd_rec[aggdesc->dtagd_nrecs - 1];
