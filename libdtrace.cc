@@ -28,6 +28,43 @@
 
 #include <dtrace.h>
 
+/*
+ * This is a tad unsightly:  if we didn't find the definition of the
+ * llquantize() aggregating action, we're going to redefine it here (along
+ * with its support cast of macros).  This allows node-libdtrace to operate
+ * on a machine that has llquantize(), even if it was compiled on a machine
+ * without the support.
+ */
+#ifndef DTRACEAGG_LLQUANTIZE
+
+#define	DTRACEAGG_LLQUANTIZE			(DTRACEACT_AGGREGATION + 9)
+
+#define	DTRACE_LLQUANTIZE_FACTORSHIFT		48
+#define	DTRACE_LLQUANTIZE_FACTORMASK		((uint64_t)UINT16_MAX << 48)
+#define	DTRACE_LLQUANTIZE_LOWSHIFT		32
+#define	DTRACE_LLQUANTIZE_LOWMASK		((uint64_t)UINT16_MAX << 32)
+#define	DTRACE_LLQUANTIZE_HIGHSHIFT		16
+#define	DTRACE_LLQUANTIZE_HIGHMASK		((uint64_t)UINT16_MAX << 16)
+#define	DTRACE_LLQUANTIZE_NSTEPSHIFT		0
+#define	DTRACE_LLQUANTIZE_NSTEPMASK		UINT16_MAX
+
+#define DTRACE_LLQUANTIZE_FACTOR(x)             \
+	(uint16_t)(((x) & DTRACE_LLQUANTIZE_FACTORMASK) >> \
+	DTRACE_LLQUANTIZE_FACTORSHIFT)
+
+#define DTRACE_LLQUANTIZE_LOW(x)                \
+        (uint16_t)(((x) & DTRACE_LLQUANTIZE_LOWMASK) >> \
+        DTRACE_LLQUANTIZE_LOWSHIFT)
+
+#define DTRACE_LLQUANTIZE_HIGH(x)               \
+        (uint16_t)(((x) & DTRACE_LLQUANTIZE_HIGHMASK) >> \
+        DTRACE_LLQUANTIZE_HIGHSHIFT)
+
+#define DTRACE_LLQUANTIZE_NSTEP(x)              \
+        (uint16_t)(((x) & DTRACE_LLQUANTIZE_NSTEPMASK) >> \
+        DTRACE_LLQUANTIZE_NSTEPSHIFT)
+#endif
+
 using namespace v8;
 using std::string;
 using std::vector;
@@ -45,11 +82,13 @@ protected:
 	boolean_t valid(const dtrace_recdesc_t *);
 	const char *action(const dtrace_recdesc_t *, char *, int);
 	Local<Value> record(const dtrace_recdesc_t *, caddr_t);
+	Local<Object> probedesc(const dtrace_probedesc_t *);
 
 	Local<Array> *ranges_cached(dtrace_aggvarid_t);
 	Local<Array> *ranges_cache(dtrace_aggvarid_t, Local<Array> *);
 	Local<Array> *ranges_quantize(dtrace_aggvarid_t);
 	Local<Array> *ranges_lquantize(dtrace_aggvarid_t, uint64_t);
+	Local<Array> *ranges_llquantize(dtrace_aggvarid_t, uint64_t, int);
 
 	static int consume(const dtrace_probedata_t *data,
 	    const dtrace_recdesc_t *rec, void *arg);
@@ -65,6 +104,7 @@ protected:
 	static Handle<Value> Setopt(const Arguments& args);
 	static Handle<Value> Go(const Arguments& args);
 	static Handle<Value> Stop(const Arguments& args);
+	static Handle<Value> Version(const Arguments& args);
 
 private:
 	dtrace_hdl_t *dtc_handle;
@@ -93,7 +133,7 @@ DTraceConsumer::DTraceConsumer() : node::ObjectWrap()
 	(void) dtrace_setopt(dtp, "bufsize", "4m");
 	(void) dtrace_setopt(dtp, "aggsize", "4m");
 
-	if (dtrace_handle_buffered(dtp, DTraceConsumer::bufhandler, NULL) == -1)
+	if (dtrace_handle_buffered(dtp, DTraceConsumer::bufhandler, this) == -1)
 		throw (dtrace_errmsg(dtp, dtrace_errno(dtp)));
 
 	dtc_ranges = NULL;
@@ -126,11 +166,11 @@ DTraceConsumer::Initialize(Handle<Object> target)
 	    DTraceConsumer::Consume);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggwalk",
 	    DTraceConsumer::Aggwalk);
-	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmin",
-	    DTraceConsumer::Aggmin);
-	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmax",
-	    DTraceConsumer::Aggmax);
+	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmin", DTraceConsumer::Aggmin);
+	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmax", DTraceConsumer::Aggmax);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "stop", DTraceConsumer::Stop);
+	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "version",
+	    DTraceConsumer::Version);
 
 	target->Set(String::NewSymbol("Consumer"), dtc_templ->GetFunction());
 }
@@ -185,6 +225,7 @@ DTraceConsumer::action(const dtrace_recdesc_t *rec, char *buf, int size)
 		{ DTRACEAGG_STDDEV,	"stddev()" },
 		{ DTRACEAGG_QUANTIZE,	"quantize()" },
 		{ DTRACEAGG_LQUANTIZE,	"lquantize()" },
+		{ DTRACEAGG_LLQUANTIZE,	"llquantize()" },
 		{ DTRACEACT_NONE,	NULL },
 	};
 
@@ -410,13 +451,35 @@ DTraceConsumer::Stop(const Arguments& args)
 	return (Undefined());
 }
 
+Local<Object>
+DTraceConsumer::probedesc(const dtrace_probedesc_t *pd)
+{
+	Local<Object> probe = Object::New();
+	probe->Set(String::New("provider"), String::New(pd->dtpd_provider));
+	probe->Set(String::New("module"), String::New(pd->dtpd_mod));
+	probe->Set(String::New("function"), String::New(pd->dtpd_func));
+	probe->Set(String::New("name"), String::New(pd->dtpd_name));
+
+	return (probe);
+}
+
 int
 DTraceConsumer::bufhandler(const dtrace_bufdata_t *bufdata, void *arg)
 {
-	/*
-	 * We do nothing here -- but should we wish to ever support complete
-	 * dtrace(1) compatibility via node.js, we will need to do work here.
-	 */
+	dtrace_probedata_t *data = bufdata->dtbda_probe;
+	const dtrace_recdesc_t *rec = bufdata->dtbda_recdesc;
+	DTraceConsumer *dtc = (DTraceConsumer *)arg;
+
+	if (rec == NULL || rec->dtrd_action != DTRACEACT_PRINTF)
+		return (DTRACE_HANDLE_OK);
+
+	Local<Object> probe = dtc->probedesc(data->dtpda_pdesc);
+	Local<Object> record = Object::New();
+	record->Set(String::New("data"), String::New(bufdata->dtbda_buffered));
+	Local<Value> argv[2] = { probe, record };
+
+	dtc->dtc_callback->Call(dtc->dtc_args->This(), 2, argv);
+
 	return (DTRACE_HANDLE_OK);
 }
 
@@ -428,11 +491,7 @@ DTraceConsumer::consume(const dtrace_probedata_t *data,
 	dtrace_probedesc_t *pd = data->dtpda_pdesc;
 	Local<Value> datum;
 
-	Local<Object> probe = Object::New();
-	probe->Set(String::New("provider"), String::New(pd->dtpd_provider));
-	probe->Set(String::New("module"), String::New(pd->dtpd_mod));
-	probe->Set(String::New("function"), String::New(pd->dtpd_func));
-	probe->Set(String::New("name"), String::New(pd->dtpd_name));
+	Local<Object> probe = dtc->probedesc(data->dtpda_pdesc);
 
 	if (rec == NULL) {
 		Local<Value> argv[1] = { probe };
@@ -443,6 +502,12 @@ DTraceConsumer::consume(const dtrace_probedata_t *data,
 	if (!dtc->valid(rec)) {
 		char errbuf[256];
 	
+		/*
+		 * If this is a printf(), we'll defer to the bufhandler.
+		 */
+		if (rec->dtrd_action == DTRACEACT_PRINTF)
+			return (DTRACE_CONSUME_THIS);
+
 		dtc->dtc_error = dtc->error("unsupported action %s "
 		    "in record for %s:%s:%s:%s\n",
 		    dtc->action(rec, errbuf, sizeof (errbuf)),
@@ -452,14 +517,12 @@ DTraceConsumer::consume(const dtrace_probedata_t *data,
 	}
 
 	Local<Object> record = Object::New();
-
 	record->Set(String::New("data"), dtc->record(rec, data->dtpda_data));
-
 	Local<Value> argv[2] = { probe, record };
 
 	dtc->dtc_callback->Call(dtc->dtc_args->This(), 2, argv);
 
-	return (rec == NULL ? DTRACE_CONSUME_NEXT : DTRACE_CONSUME_THIS);
+	return (DTRACE_CONSUME_THIS);
 }
 
 Handle<Value>
@@ -584,6 +647,59 @@ DTraceConsumer::ranges_lquantize(dtrace_aggvarid_t varid,
 	return (ranges_cache(varid, ranges));
 }
 
+Local<Array> *
+DTraceConsumer::ranges_llquantize(dtrace_aggvarid_t varid,
+    const uint64_t arg, int nbuckets)
+{
+	int64_t value = 1, next, step;
+	Local<Array> *ranges;
+	int bucket = 0, order;
+	uint16_t factor, low, high, nsteps;
+
+	if ((ranges = ranges_cached(varid)) != NULL)
+		return (ranges);
+
+	factor = DTRACE_LLQUANTIZE_FACTOR(arg);
+	low = DTRACE_LLQUANTIZE_LOW(arg);
+	high = DTRACE_LLQUANTIZE_HIGH(arg);
+	nsteps = DTRACE_LLQUANTIZE_NSTEP(arg);
+
+	ranges = new Local<Array>[nbuckets];
+
+	for (order = 0; order < low; order++)
+		value *= factor;
+
+	ranges[bucket] = Array::New(2);
+	ranges[bucket]->Set(0, Number::New(0));
+	ranges[bucket]->Set(1, Number::New(value - 1));
+	bucket++;
+
+	next = value * factor;
+	step = next > nsteps ? next / nsteps : 1;
+
+	while (order <= high) {
+		ranges[bucket] = Array::New(2);
+		ranges[bucket]->Set(0, Number::New(value));
+		ranges[bucket]->Set(1, Number::New(value + step - 1));
+		bucket++;
+
+		if ((value += step) != next)
+			continue;
+
+		next = value * factor;
+		step = next > nsteps ? next / nsteps : 1;
+		order++;
+	}
+
+	ranges[bucket] = Array::New(2);
+	ranges[bucket]->Set(0, Number::New(value));
+	ranges[bucket]->Set(1, Number::New(INT64_MAX));
+
+	assert(bucket + 1 == nbuckets);
+
+	return (ranges_cache(varid, ranges));
+}
+
 int
 DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 {
@@ -665,7 +781,8 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 		break;
 	}
 
-	case DTRACEAGG_LQUANTIZE: {
+	case DTRACEAGG_LQUANTIZE:
+	case DTRACEAGG_LLQUANTIZE: {
 		Local<Array> lquantize = Array::New();
 		const int64_t *data = (int64_t *)(agg->dtada_data +
 		    aggrec->dtrd_offset);
@@ -673,11 +790,13 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 		int i, j = 0;
 
 		uint64_t arg = *data++;
-		uint16_t levels = DTRACE_LQUANTIZE_LEVELS(arg);
+		int levels = (aggrec->dtrd_size / sizeof (uint64_t)) - 1;
 
-		ranges = dtc->ranges_lquantize(aggdesc->dtagd_varid, arg);
+		ranges = (aggrec->dtrd_action == DTRACEAGG_LQUANTIZE ?
+		    dtc->ranges_lquantize(aggdesc->dtagd_varid, arg) :
+		    dtc->ranges_llquantize(aggdesc->dtagd_varid, arg, levels));
 
-		for (i = 0; i <= levels + 1; i++) {
+		for (i = 0; i < levels; i++) {
 			if (!data[i])
 				continue;
 
@@ -760,6 +879,12 @@ Handle<Value>
 DTraceConsumer::Aggmax(const Arguments& args)
 {
 	return (Number::New(INT64_MAX));
+}
+
+Handle<Value>
+DTraceConsumer::Version(const Arguments& args)
+{
+	return (String::New(_dtrace_version));
 }
 
 extern "C" void

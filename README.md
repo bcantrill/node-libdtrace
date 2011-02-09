@@ -126,6 +126,10 @@ induce any additional data processing.
 `consumer.aggwalk()` does not iterate over aggregation data in any guaranteed
 order, and may interleave aggregation variables and/or keys.
 
+### `consumer.version()`
+
+Returns the version string, as returned from `dtrace -V`.
+
 Examples
 --------
 
