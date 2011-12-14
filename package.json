@@ -1,11 +1,11 @@
 {
 	"name":		"libdtrace",
-	"version":	"0.0.1",
+	"version":	"0.0.2",
 	"description":	"Solaris libdtrace bindings",
 	"homepage":	"https://github.com/bcantrill/node-libdtrace",
 	"author":	"Joyent (joyent.com)",
-	"engines":	{ "node": "*" },
-	"main":		"./build/default/libdtrace",
+	"engines":	{ "node": ">=0.6" },
+	"main":		"./build/Release/libdtrace",
 	"scripts": {
 		"install": "node-waf configure build"
 	}
