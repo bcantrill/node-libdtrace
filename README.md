@@ -21,17 +21,15 @@ Platforms
 ---------
 
 This should work on any platform that supports DTrace, and is known to work on
-Mac OS X (tested on 10.6.4) and Solaris, OpenSolaris and derivatives (tested on
-Nevada 121 and later).
+Mac OS X (tested on 10.7.5) and illumos (tested on
+SmartOS).
 
 Installation
 ------------
 
-As an addon, nod-libdtrace is installed in the usual way:
+As an addon, node-libdtrace is installed in the usual way:
 
-      % node-waf configure
-      % node-waf build
-      % node-waf
+      % npm install libdtrace
 
 API
 ---
@@ -201,5 +199,3 @@ sorted by executable name:
       
               sys.puts('');
       }, 1000);
-
-

@@ -892,3 +892,5 @@ init (Handle<Object> target)
 {
 	DTraceConsumer::Initialize(target);
 }
+
+NODE_MODULE(dtrace, init);
