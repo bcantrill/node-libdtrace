@@ -97,6 +97,7 @@ protected:
 
 	static Handle<Value> New(const Arguments& args);
 	static Handle<Value> Consume(const Arguments& args);
+	static Handle<Value> Aggclear(const Arguments& args);
 	static Handle<Value> Aggwalk(const Arguments& args);
 	static Handle<Value> Aggmin(const Arguments& args);
 	static Handle<Value> Aggmax(const Arguments& args);
@@ -166,6 +167,8 @@ DTraceConsumer::Initialize(Handle<Object> target)
 	    DTraceConsumer::Consume);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggwalk",
 	    DTraceConsumer::Aggwalk);
+	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggclear",
+	    DTraceConsumer::Aggclear);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmin", DTraceConsumer::Aggmin);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "aggmax", DTraceConsumer::Aggmax);
 	NODE_SET_PROTOTYPE_METHOD(dtc_templ, "stop", DTraceConsumer::Stop);
@@ -822,6 +825,22 @@ DTraceConsumer::aggwalk(const dtrace_aggdata_t *agg, void *arg)
 	dtc->dtc_callback->Call(dtc->dtc_args->This(), 3, argv);
 
 	return (DTRACE_AGGWALK_REMOVE);
+}
+
+Handle<Value>
+DTraceConsumer::Aggclear(const Arguments& args)
+{
+	HandleScope scope;
+	DTraceConsumer *dtc = ObjectWrap::Unwrap<DTraceConsumer>(args.Holder());
+	dtrace_hdl_t *dtp = dtc->dtc_handle;
+
+	if (dtrace_status(dtp) == -1) {
+		return (dtc->error("couldn't get status: %s\n",
+		    dtrace_errmsg(dtp, dtrace_errno(dtp))));
+	}
+
+	dtrace_aggregate_clear(dtp);
+	return (Undefined());
 }
 
 Handle<Value>
